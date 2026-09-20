@@ -295,6 +295,54 @@ h3 {
   background: var(--red);
 }
 
+.clip-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: rgba(183, 134, 44, 0.07);
+  padding: 8px 10px;
+  margin-bottom: 12px;
+}
+
+.clip-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.clip-actions button {
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.clip-actions button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.clip-info {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.clip-info.notice {
+  color: var(--blue);
+  font-weight: 700;
+}
+
+.clip-info.aiming {
+  color: var(--green);
+  font-weight: 700;
+}
+
 .stage {
   margin: 0 auto;
   display: grid;
@@ -348,6 +396,52 @@ h3 {
 }
 
 .cell.vertical {
+  writing-mode: vertical-rl;
+}
+
+/* 矩形选区 */
+.cell.in-selection {
+  outline: 2px solid var(--blue);
+  outline-offset: -2px;
+  background: rgba(54, 95, 125, 0.18);
+}
+
+.cell.used.in-selection {
+  background: rgba(54, 95, 125, 0.55);
+}
+
+/* 待剪切的原区域：剪切只在粘贴成功后腾空 */
+.cell.cut-source {
+  outline: 2px dashed var(--gold);
+  outline-offset: -2px;
+}
+
+/* 粘贴预览 */
+.stage.aiming {
+  cursor: crosshair;
+}
+
+.stage.aiming .cell {
+  cursor: crosshair;
+}
+
+.cell.paste-preview {
+  outline: 2px solid var(--green);
+  outline-offset: -2px;
+  background: rgba(60, 112, 86, 0.22);
+}
+
+.cell.paste-preview.conflict {
+  outline-color: var(--red);
+  background: rgba(164, 64, 55, 0.28);
+}
+
+.cell .ghost {
+  opacity: 0.55;
+  font-weight: 900;
+}
+
+.cell.vertical .ghost {
   writing-mode: vertical-rl;
 }
 

@@ -9,11 +9,16 @@ const starterInventory = [
   { id: crypto.randomUUID(), char: "雨", style: "仿宋细字", size: 22, quantity: 4, wear: "新" }
 ];
 
+// clipboard：{ width, height, items:[{r,c,typeId}], mode:"copy"|"cut", source: rect|null }
+// selection：{ r0,c0,r1,c1 } 矩形选区；lastCut：最近一次已完成剪切的撤销快照
 const defaultState = {
   inventory: starterInventory,
   selectedTypeId: starterInventory[0].id,
   placements: [],
   drafts: [],
+  selection: null,
+  clipboard: null,
+  lastCut: null,
   settings: {
     paperSize: "postcard",
     flowMode: "horizontal",
@@ -47,8 +52,20 @@ const els = {
   inventoryCount: document.querySelector("#inventoryCount"),
   saveDraftBtn: document.querySelector("#saveDraftBtn"),
   exportBtn: document.querySelector("#exportBtn"),
-  clearBoardBtn: document.querySelector("#clearBoardBtn")
+  clearBoardBtn: document.querySelector("#clearBoardBtn"),
+  copyBtn: document.querySelector("#copyBtn"),
+  cutBtn: document.querySelector("#cutBtn"),
+  pasteBtn: document.querySelector("#pasteBtn"),
+  undoCutBtn: document.querySelector("#undoCutBtn"),
+  clipboardInfo: document.querySelector("#clipboardInfo")
 };
+
+// 粘贴瞄准模式为会话态，不写入本地存储
+let aimMode = false;
+let aimAnchor = null;
+let dragSelect = null;
+let suppressStageClick = false;
+let clipboardNotice = null;
 
 function loadState() {
   const saved = localStorage.getItem(storageKey);
@@ -78,6 +95,28 @@ function getGrid() {
 
 function placementKey(row, col) {
   return `${row}:${col}`;
+}
+
+function normalizeRect(r0, c0, r1, c1) {
+  return {
+    r0: Math.min(r0, r1),
+    c0: Math.min(c0, c1),
+    r1: Math.max(r0, r1),
+    c1: Math.max(c0, c1)
+  };
+}
+
+function rectContains(rect, row, col) {
+  return !!rect && row >= rect.r0 && row <= rect.r1 && col >= rect.c0 && col <= rect.c1;
+}
+
+function sameRect(a, b) {
+  if (!a || !b) return a === b;
+  return a.r0 === b.r0 && a.c0 === b.c0 && a.r1 === b.r1 && a.c1 === b.c1;
+}
+
+function liveTypeIds() {
+  return new Set(state.inventory.map((item) => item.id));
 }
 
 function getSelectedType() {
@@ -139,19 +178,47 @@ function renderInventory() {
 function renderStage() {
   const { cols, rows } = getGrid();
   const map = new Map(state.placements.map((item) => [placementKey(item.row, item.col), item]));
-  els.stage.className = `stage ${state.settings.paperSize}`;
+  els.stage.className = `stage ${state.settings.paperSize}${aimMode ? " aiming" : ""}`;
   els.stage.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
   els.stage.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
   els.stage.style.gap = `${state.settings.gridGap}px`;
+
+  const cutSource = state.clipboard && state.clipboard.mode === "cut" ? state.clipboard.source : null;
+  const preview = aimMode && state.clipboard && aimAnchor
+    ? inspectPaste(aimAnchor.row, aimAnchor.col)
+    : null;
+  const previewMap = new Map();
+  const ghostText = new Map();
+  if (preview) {
+    preview.cells.forEach((cell) => {
+      previewMap.set(placementKey(cell.row, cell.col), cell);
+      if (cell.live && !cell.conflict) {
+        const type = state.inventory.find((item) => item.id === cell.typeId);
+        if (type && !map.has(placementKey(cell.row, cell.col))) {
+          ghostText.set(placementKey(cell.row, cell.col), type.char);
+        }
+      }
+    });
+  }
+
   const cells = [];
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
       const placement = map.get(placementKey(row, col));
       const type = placement ? state.inventory.find((item) => item.id === placement.typeId) : null;
       const vertical = state.settings.flowMode === "vertical" ? "vertical" : "";
+      const inSelection = rectContains(state.selection, row, col) ? "in-selection" : "";
+      const inCutSource = rectContains(cutSource, row, col) ? "cut-source" : "";
+      const previewCell = previewMap.get(placementKey(row, col));
+      const previewClass = previewCell
+        ? previewCell.conflict
+          ? "paste-preview conflict"
+          : "paste-preview"
+        : "";
+      const ghost = ghostText.get(placementKey(row, col));
       cells.push(`
-        <button class="cell ${type ? "used" : ""} ${vertical}" data-row="${row}" data-col="${col}" type="button" aria-label="第${row + 1}行第${col + 1}列">
-          ${type ? escapeHtml(type.char) : ""}
+        <button class="cell ${type ? "used" : ""} ${vertical} ${inSelection} ${inCutSource} ${previewClass}" data-row="${row}" data-col="${col}" type="button" aria-label="第${row + 1}行第${col + 1}列">
+          ${type ? escapeHtml(type.char) : ghost ? `<span class="ghost">${escapeHtml(ghost)}</span>` : ""}
         </button>
       `);
     }
@@ -204,6 +271,186 @@ function renderDrafts() {
       .join("") || `<p class="empty">还没有保存草稿。</p>`;
 }
 
+// ---- 矩形剪贴板 ----
+
+function hasSelection() {
+  return !!state.selection;
+}
+
+function hasClipboard() {
+  return !!state.clipboard && state.clipboard.items.some((item) => liveTypeIds().has(item.typeId));
+}
+
+function captureSelection(mode) {
+  if (!state.selection) return;
+  const rect = normalizeRect(state.selection.r0, state.selection.c0, state.selection.r1, state.selection.c1);
+  const width = rect.c1 - rect.c0 + 1;
+  const height = rect.r1 - rect.r0 + 1;
+  const items = state.placements
+    .filter((item) => rectContains(rect, item.row, item.col))
+    .map((item) => ({ r: item.row - rect.r0, c: item.col - rect.c0, typeId: item.typeId }));
+  state.clipboard = {
+    width,
+    height,
+    items,
+    mode,
+    source: mode === "cut" ? rect : null
+  };
+  exitAim();
+  showClipboardNotice(
+    mode === "cut"
+      ? `已记录剪切 ${items.length} 字（${width}×${height}），版面暂不变；粘贴成功后才清空原区域。`
+      : `已复制 ${items.length} 字（${width}×${height}）到剪贴板。`
+  );
+  renderAll();
+}
+
+// 逐格检查越界与目标占用；剪切模式下原区域格子视为将腾空，不判为冲突
+function inspectPaste(anchorRow, anchorCol) {
+  const board = getGrid();
+  const liveIds = liveTypeIds();
+  const boardMap = new Map(state.placements.map((item) => [placementKey(item.row, item.col), item]));
+  const source = state.clipboard.mode === "cut" ? state.clipboard.source : null;
+  const cells = state.clipboard.items.map((item) => {
+    const row = anchorRow + item.r;
+    const col = anchorCol + item.c;
+    const live = liveIds.has(item.typeId);
+    const outOfBounds = live && (row < 0 || row >= board.rows || col < 0 || col >= board.cols);
+    const occupied = live && boardMap.has(placementKey(row, col)) && !rectContains(source, row, col);
+    return { row, col, typeId: item.typeId, live, outOfBounds, conflict: outOfBounds || occupied };
+  });
+  return { cells, valid: cells.every((cell) => !cell.conflict) };
+}
+
+function commitPaste(anchorRow, anchorCol) {
+  if (!state.clipboard) return;
+  const result = inspectPaste(anchorRow, anchorCol);
+  if (!result.valid) {
+    const over = result.cells.filter((cell) => cell.outOfBounds).length;
+    const occupied = result.cells.filter((cell) => !cell.outOfBounds && cell.conflict).length;
+    showClipboardNotice(`无法粘贴：${over ? `${over}格越界` : ""}${over && occupied ? "、" : ""}${occupied ? `${occupied}格已被占用` : ""}。整次拒绝，源版面保持不变。`);
+    renderClipboardBar();
+    return;
+  }
+  const liveIds = liveTypeIds();
+  const cuts = [];
+  const additions = [];
+  if (state.clipboard.mode === "cut" && state.clipboard.source) {
+    const source = state.clipboard.source;
+    state.placements.forEach((item) => {
+      if (rectContains(source, item.row, item.col)) cuts.push({ row: item.row, col: item.col, typeId: item.typeId });
+    });
+    state.placements = state.placements.filter((item) => !rectContains(source, item.row, item.col));
+  }
+  result.cells.forEach((cell) => {
+    if (!liveIds.has(cell.typeId)) return;
+    state.placements.push({ row: cell.row, col: cell.col, typeId: cell.typeId });
+    additions.push({ row: cell.row, col: cell.col, typeId: cell.typeId });
+  });
+  const wasCut = state.clipboard.mode === "cut";
+  if (wasCut) {
+    state.lastCut = { cuts, additions };
+    state.clipboard = { ...state.clipboard, mode: "copy", source: null };
+  }
+  exitAim();
+  showClipboardNotice(
+    wasCut
+      ? `剪切粘贴完成，原区域 ${cuts.length} 字已腾空；可点“撤销剪切”恢复。`
+      : `已粘贴 ${additions.length} 字。`
+  );
+  renderAll();
+}
+
+function undoCut() {
+  if (!state.lastCut) return;
+  const { cuts, additions } = state.lastCut;
+  additions.forEach((item) => {
+    state.placements = state.placements.filter((p) => p.row !== item.row || p.col !== item.col);
+  });
+  cuts.forEach((item) => {
+    if (!state.placements.some((p) => p.row === item.row && p.col === item.col)) {
+      state.placements.push({ row: item.row, col: item.col, typeId: item.typeId });
+    }
+  });
+  state.lastCut = null;
+  exitAim();
+  showClipboardNotice("已撤销最近一次剪切粘贴，原区域恢复。");
+  renderAll();
+}
+
+function enterAim() {
+  if (!hasClipboard()) return;
+  aimMode = true;
+  aimAnchor = null;
+  renderAll();
+}
+
+function exitAim() {
+  aimMode = false;
+  aimAnchor = null;
+}
+
+function clearSelection() {
+  state.selection = null;
+  exitAim();
+}
+
+// 换纸 / 载入草稿 / 清空：选区失效，但剪贴板内容保留；待剪切状态安全降级为普通复制
+function resetSelectionContext({ dropUndo = false } = {}) {
+  state.selection = null;
+  exitAim();
+  if (state.clipboard && state.clipboard.mode === "cut") {
+    state.clipboard = { ...state.clipboard, mode: "copy", source: null };
+  }
+  if (dropUndo) state.lastCut = null;
+}
+
+function showClipboardNotice(text) {
+  clipboardNotice = { text, at: Date.now() };
+}
+
+function renderClipboardBar() {
+  els.copyBtn.disabled = !hasSelection();
+  els.cutBtn.disabled = !hasSelection();
+  els.pasteBtn.disabled = !hasClipboard();
+  els.undoCutBtn.disabled = !state.lastCut;
+
+  if (clipboardNotice && Date.now() - clipboardNotice.at > 2800) clipboardNotice = null;
+
+  if (clipboardNotice) {
+    els.clipboardInfo.textContent = clipboardNotice.text;
+    els.clipboardInfo.className = "clip-info notice";
+    return;
+  }
+
+  if (aimMode && state.clipboard) {
+    const preview = aimAnchor ? inspectPaste(aimAnchor.row, aimAnchor.col) : null;
+    const dims = `${state.clipboard.width}×${state.clipboard.height}`;
+    if (!preview) {
+      els.clipboardInfo.textContent = `粘贴模式（${dims}）：移动鼠标选择落点，点击确认，Esc 或右键取消。`;
+    } else if (preview.valid) {
+      els.clipboardInfo.textContent = `粘贴模式（${dims}）：落点 (${aimAnchor.row + 1},${aimAnchor.col + 1})，点击确认，Esc 取消。`;
+    } else {
+      els.clipboardInfo.textContent = `该落点存在越界或占用冲突，整次粘贴将被拒绝；换个位置再点。`;
+    }
+    els.clipboardInfo.className = "clip-info aiming";
+    return;
+  }
+
+  const parts = [];
+  if (state.selection) {
+    const rect = normalizeRect(state.selection.r0, state.selection.c0, state.selection.r1, state.selection.c1);
+    parts.push(`已选 ${rect.r1 - rect.r0 + 1}行×${rect.c1 - rect.c0 + 1}列`);
+  }
+  if (state.clipboard) {
+    const live = state.clipboard.items.filter((item) => liveTypeIds().has(item.typeId)).length;
+    parts.push(`剪贴板 ${state.clipboard.width}×${state.clipboard.height} · ${live}字 · ${state.clipboard.mode === "cut" ? "待剪切" : "复制"}`);
+  }
+  parts.push(state.lastCut ? "可撤销最近一次剪切" : "Shift+拖选 · Ctrl+C/X/V");
+  els.clipboardInfo.textContent = parts.join("　｜　");
+  els.clipboardInfo.className = "clip-info";
+}
+
 function renderAll() {
   saveState();
   renderSettings();
@@ -212,6 +459,7 @@ function renderAll() {
   renderStage();
   renderUsage();
   renderDrafts();
+  renderClipboardBar();
 }
 
 function placeType(row, col, typeId = state.selectedTypeId) {
@@ -313,6 +561,7 @@ els.paperSize.addEventListener("change", () => {
   state.settings.paperSize = els.paperSize.value;
   const { cols, rows } = getGrid();
   state.placements = state.placements.filter((item) => item.row < rows && item.col < cols);
+  resetSelectionContext({ dropUndo: true });
   renderAll();
 });
 
@@ -338,6 +587,7 @@ els.saveDraftBtn.addEventListener("click", saveDraft);
 els.exportBtn.addEventListener("click", exportPreview);
 els.clearBoardBtn.addEventListener("click", () => {
   state.placements = [];
+  resetSelectionContext({ dropUndo: true });
   renderAll();
 });
 
@@ -371,13 +621,151 @@ els.stage.addEventListener("drop", (event) => {
   const cell = event.target.closest(".cell");
   if (!cell) return;
   event.preventDefault();
+  clearSelection();
   placeType(Number(cell.dataset.row), Number(cell.dataset.col), event.dataTransfer.getData("text/plain"));
+});
+
+els.stage.addEventListener("mousedown", (event) => {
+  // 新按下时复位，避免上一次拖到版面外松开（无尾随 click）永久吞掉后续点击
+  suppressStageClick = false;
+  if (event.button !== 0) return;
+  const cell = event.target.closest(".cell");
+  if (!cell) return;
+  const row = Number(cell.dataset.row);
+  const col = Number(cell.dataset.col);
+  if (aimMode) {
+    // 落点确认统一交给 click，避免 mousedown+click 双提交
+    event.preventDefault();
+    return;
+  }
+  if (event.shiftKey) {
+    event.preventDefault();
+    dragSelect = { r0: row, c0: col, r1: row, c1: col, moved: false };
+    state.selection = normalizeRect(row, col, row, col);
+    renderStage();
+  }
+});
+
+els.stage.addEventListener("mousemove", (event) => {
+  const cell = event.target.closest(".cell");
+  if (aimMode) {
+    if (cell) {
+      const row = Number(cell.dataset.row);
+      const col = Number(cell.dataset.col);
+      if (!aimAnchor || aimAnchor.row !== row || aimAnchor.col !== col) {
+        aimAnchor = { row, col };
+        renderStage();
+        renderClipboardBar();
+      }
+    }
+    return;
+  }
+  if (!dragSelect) return;
+  if (!cell) return;
+  const row = Number(cell.dataset.row);
+  const col = Number(cell.dataset.col);
+  const next = normalizeRect(dragSelect.r0, dragSelect.c0, row, col);
+  dragSelect.moved = true;
+  if (!sameRect(state.selection, next)) {
+    state.selection = next;
+    renderStage();
+  }
+});
+
+els.stage.addEventListener("mouseup", () => {
+  if (dragSelect) {
+    suppressStageClick = true;
+    dragSelect = null;
+    renderAll();
+  }
+});
+
+// 鼠标在版面外松开时兜底结束拖选（在 stage 内松开时上面的处理器已把 dragSelect 置空）
+window.addEventListener("mouseup", () => {
+  if (dragSelect) {
+    dragSelect = null;
+    renderAll();
+  }
+});
+
+els.stage.addEventListener("mouseleave", () => {
+  if (aimMode && aimAnchor) {
+    aimAnchor = null;
+    renderStage();
+    renderClipboardBar();
+  }
+});
+
+// 瞄准模式下右键取消
+els.stage.addEventListener("contextmenu", (event) => {
+  if (aimMode) {
+    event.preventDefault();
+    exitAim();
+    renderAll();
+  }
 });
 
 els.stage.addEventListener("click", (event) => {
   const cell = event.target.closest(".cell");
+  if (suppressStageClick) {
+    suppressStageClick = false;
+    return;
+  }
   if (!cell) return;
+  if (aimMode) {
+    commitPaste(Number(cell.dataset.row), Number(cell.dataset.col));
+    return;
+  }
+  // 普通落字会清空当前选区
+  clearSelection();
   placeType(Number(cell.dataset.row), Number(cell.dataset.col));
+});
+
+els.copyBtn.addEventListener("click", () => captureSelection("copy"));
+els.cutBtn.addEventListener("click", () => captureSelection("cut"));
+els.pasteBtn.addEventListener("click", () => {
+  if (aimMode) {
+    exitAim();
+    renderAll();
+  } else {
+    enterAim();
+  }
+});
+els.undoCutBtn.addEventListener("click", undoCut);
+
+window.addEventListener("keydown", (event) => {
+  const tag = (event.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea" || tag === "select") return;
+  if (event.key === "Escape") {
+    if (aimMode) {
+      exitAim();
+      renderAll();
+    } else if (state.selection) {
+      state.selection = null;
+      renderAll();
+    }
+    return;
+  }
+  if (!(event.ctrlKey || event.metaKey)) return;
+  const key = event.key.toLowerCase();
+  if (key === "c" && state.selection) {
+    event.preventDefault();
+    captureSelection("copy");
+  } else if (key === "x" && state.selection) {
+    event.preventDefault();
+    captureSelection("cut");
+  } else if (key === "v" && hasClipboard()) {
+    event.preventDefault();
+    if (aimMode) {
+      exitAim();
+      renderAll();
+    } else {
+      enterAim();
+    }
+  } else if (key === "z" && state.lastCut) {
+    event.preventDefault();
+    undoCut();
+  }
 });
 
 els.draftList.addEventListener("click", (event) => {
@@ -388,6 +776,7 @@ els.draftList.addEventListener("click", (event) => {
     if (!draft) return;
     state.settings = structuredClone(draft.settings);
     state.placements = structuredClone(draft.placements);
+    resetSelectionContext({ dropUndo: true });
     renderAll();
   }
   if (deleteButton) {
