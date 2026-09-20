@@ -351,6 +351,137 @@ h3 {
   writing-mode: vertical-rl;
 }
 
+.selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border: 1px dashed var(--red);
+  border-radius: 8px;
+  background: rgba(164, 64, 55, 0.08);
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+.selection-bar[hidden] {
+  display: none;
+}
+
+.selection-bar span {
+  font-size: 13px;
+  font-weight: 800;
+  margin-right: auto;
+}
+
+.selection-bar button {
+  padding: 6px 12px;
+}
+
+.stage.selecting,
+.stage.armed {
+  touch-action: none;
+}
+
+.stage.selecting .cell,
+.stage.armed .cell {
+  cursor: crosshair;
+}
+
+.cell.in-selection {
+  border-style: solid;
+  border-color: var(--red);
+  background: rgba(164, 64, 55, 0.22);
+  box-shadow: inset 0 0 0 2px rgba(164, 64, 55, 0.35);
+}
+
+.cell.in-selection.used {
+  background: rgba(164, 64, 55, 0.55);
+}
+
+.cell.cut-source {
+  outline: 2px dashed var(--gold);
+  outline-offset: -3px;
+}
+
+.cell.paste-preview {
+  box-shadow: inset 0 0 0 3px var(--green);
+  background: rgba(60, 112, 86, 0.3);
+}
+
+.cell.paste-preview.used {
+  background: rgba(60, 112, 86, 0.65);
+}
+
+.cell.paste-preview-conflict {
+  box-shadow: inset 0 0 0 3px var(--red);
+  background: rgba(164, 64, 55, 0.4);
+}
+
+.clipboard-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.clipboard-meta {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffdf8;
+  padding: 9px;
+}
+
+.clipboard-meta strong {
+  font-size: 13px;
+}
+
+.clipboard-meta span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.clipboard-meta .clipboard-live {
+  color: var(--green);
+  font-weight: 800;
+}
+
+.clipboard-actions {
+  display: grid;
+  gap: 6px;
+}
+
+.clipboard-actions button {
+  padding: 8px;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translate(-50%, 16px);
+  max-width: min(90vw, 520px);
+  border-radius: 999px;
+  background: var(--ink);
+  color: #fffaf1;
+  padding: 11px 20px;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.toast.error {
+  background: var(--red);
+}
+
 .usage-list,
 .draft-list {
   display: grid;

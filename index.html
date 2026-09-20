@@ -77,9 +77,15 @@
           <div class="status-strip">
             <div>
               <strong id="selectedTypeLabel">未选择字模</strong>
-              <span>点击字模后，在版面格子中落字，也可拖拽字模到版面。</span>
+              <span id="stageHint">点击字模后，在版面格子中落字，也可拖拽字模到版面。</span>
             </div>
             <div id="shortageBadge" class="badge ok">数量充足</div>
+          </div>
+          <div id="selectionBar" class="selection-bar" hidden>
+            <span id="selectionInfo"></span>
+            <button id="copyRectBtn" type="button">复制</button>
+            <button id="cutRectBtn" type="button">剪切</button>
+            <button id="cancelSelectionBtn" type="button">取消选区</button>
           </div>
           <div id="stage" class="stage" aria-label="排版画布"></div>
         </section>
@@ -90,6 +96,9 @@
             <span id="placedCount"></span>
           </div>
           <div id="usageList" class="usage-list"></div>
+          <div class="divider"></div>
+          <h3>矩形剪贴板</h3>
+          <div id="clipboardPanel" class="clipboard-panel"></div>
           <div class="divider"></div>
           <h3>已保存草稿</h3>
           <div id="draftList" class="draft-list"></div>
